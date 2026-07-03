@@ -44,6 +44,23 @@ Every automated piece is **opt-in** — out of the box, `/dream` is a manual com
 - **Anti-capture rules** (borrowed from Hermes): no environment-dependent failures, no "tool X is broken" claims (they harden into refusals long after the problem is fixed — the *fix* gets captured instead), no transient errors that resolved, no credentials, ever.
 - **Bounded cost**: nightly run handles ≤3 projects, skips trivial transcripts, reads user-messages-only via `jq`, and exits at zero cost when nothing is queued.
 
+## Cowork / portable mode
+
+`/dream` detects its environment at start (a write-probe on `~/.claude`). On **Claude Code** you get the full loop described above. On **Claude Cowork** — where `~/.claude` is read-only, the sandbox home doesn't survive between sessions, and there are no transcripts, hooks, or cron — it switches to **portable capture-only** mode:
+
+- `user`-type facts → a `# User profile (maintained by /dream)` section in the **project folder's `CLAUDE.md`**
+- `feedback`/`project`/`reference` facts → sections in the **project folder's `MEMORY.md`**
+
+Both files are what Cowork natively loads each session, and Claude Code reads the project `CLAUDE.md` too — so memories captured in Cowork carry over when you open the same folder from Code. `history`, `queued`, `rem`, `proposals`, and `setup` refuse in Cowork with a pointer back to Claude Code.
+
+**Install in Cowork:** zip the skill with the `dream/` folder as root, then upload it via Settings → Capabilities → “+”:
+
+```bash
+zip -r dream.zip dream/
+```
+
+(`scripts/` ships in the zip but is inert in Cowork — it's only used by `/dream setup` on Claude Code.)
+
 ## Install
 
 ```bash

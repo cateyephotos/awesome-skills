@@ -1,6 +1,6 @@
 ---
 name: dream
-description: Self-improving memory loop — capture the user's preferences, corrections, and standing rules as project memories; periodically consolidate them (REM pass) and propose improvements to skills and CLAUDE.md. Modes - default, history, queued, rem, proposals, setup.
+description: Self-improving memory loop — capture the user's preferences, corrections, and standing rules as project memories; periodically consolidate them (REM pass) and propose improvements to skills and CLAUDE.md. Modes - default, history, queued, rem, proposals, setup. Full loop on Claude Code; capture-only portable mode on Claude Cowork.
 disable-model-invocation: true
 ---
 
@@ -17,11 +17,23 @@ Parse `$ARGUMENTS`:
 | *(empty)* | **Capture** from the current conversation (§1–§5, then §6) |
 | `history` | **Capture** from recent transcripts (§1–§5, then §6) |
 | `queued` | **Capture** from transcripts queued by the SessionEnd hook (§1–§5, then §6) |
-| `rem` or `rem --dry-run` | **REM consolidation** pass (§7) |
-| `proposals` | **Review pending proposals** interactively (§8) |
-| `setup` | **Install opt-in automation** on this machine (§9) |
+| `rem` or `rem --dry-run` | **REM consolidation** pass (§7) — FULL only |
+| `proposals` | **Review pending proposals** interactively (§8) — FULL only |
+| `setup` | **Install opt-in automation** on this machine (§9) — FULL only |
 
-Paths used throughout:
+## 0.1 Environment detection (run FIRST, before any mode)
+
+Not every Claude surface has a writable, persistent `~/.claude` (Claude Cowork's sandbox mounts it read-only and the sandbox home does not survive between sessions). Probe once:
+
+```bash
+mkdir -p ~/.claude/projects 2>/dev/null && touch ~/.claude/.dream-probe 2>/dev/null \
+  && rm -f ~/.claude/.dream-probe && echo FULL || echo PORTABLE
+```
+
+- **FULL** (Claude Code on a real machine): follow this document as written.
+- **PORTABLE** (Cowork or any sandbox without writable `~/.claude`): only default **capture** is supported. Persistence is re-routed to the project folder (§3-P); modes `history`, `queued`, `rem`, `proposals`, `setup` must refuse with one line naming the missing primitive and pointing to Claude Code, e.g. `history` → "session transcripts don't exist in Cowork — run this from Claude Code". The final report (§5) must state which mode ran.
+
+Paths used throughout (FULL mode):
 
 - Project slug: cwd with `/` replaced by `-` (e.g. `/home/me/proj` → `-home-me-proj`).
 - Project memory: `~/.claude/projects/<project-slug>/memory/`
@@ -30,7 +42,7 @@ Paths used throughout:
 
 ## 1. Gather source material (capture modes)
 
-- **Default (in-conversation):** if the current conversation has substantive exchanges, analyze it directly. No file reads needed. If it's fresh/empty, fall back to `history`.
+- **Default (in-conversation):** if the current conversation has substantive exchanges, analyze it directly. No file reads needed. If it's fresh/empty, fall back to `history` (FULL only — in PORTABLE there are no transcripts: say so and stop).
 - **`history`:** mine recent transcripts from `~/.claude/projects/<project-slug>/`. Pick the 3-5 most recent `*.jsonl` by mtime (`ls -t`), skipping tiny files.
 - **`queued`:** read `~/.claude/dream/queue.tsv` (TSV: `timestamp<TAB>cwd<TAB>transcript_path`), take only lines whose `cwd` matches the current project. Process those transcripts, then move the processed lines to `~/.claude/dream/digested.log`. If none match, say so and stop.
 
@@ -90,6 +102,25 @@ metadata:
 
 Link related memories with `[[their-name]]`. Then maintain the index `MEMORY.md` in the same dir — one line per memory: `- [Title](file.md) — hook`. Create it if missing; append or update the line for each memory written. NEVER put memory bodies in MEMORY.md — index lines only.
 
+### 3-P. PORTABLE routing (Cowork)
+
+In PORTABLE mode `~/.claude` is off-limits; anchor everything in the **project folder** (cwd) — the two files Cowork itself loads natively, which Claude Code also reads when opened on the same folder:
+
+- **`type: user` facts** → `./CLAUDE.md`, section `# User profile (maintained by /dream)` (create file/section if missing). Same rules as the global profile: short bullets, ~1,500-char cap, merge/trim over append. Add once, under the header: `<!-- project-local profile — in Claude Code this lives in ~/.claude/CLAUDE.md -->`.
+- **`feedback` / `project` / `reference` facts** → `./MEMORY.md` in the project root (here it IS the store, not just an index — Cowork auto-loads it). One `## <short-kebab-slug>` section per fact:
+
+  ```markdown
+  ## <short-kebab-slug>
+  type: feedback | project | reference · created: <YYYY-MM-DD> · lastConfirmed: <YYYY-MM-DD>
+
+  <the fact>
+  **Why:** <what prompted this>
+  **How to apply:** <concrete behavioral instruction>
+  ```
+
+  Keep it lean: ≤ ~30 sections; when over, merge overlapping sections manually (mini-REM) instead of appending.
+- Dedup discipline (§4) applies unchanged: read existing `CLAUDE.md`/`MEMORY.md` first, update in place, bump `lastConfirmed` on re-confirmation.
+
 ## 4. Dedup discipline
 
 BEFORE writing anything, read the existing memory dir (`MEMORY.md` first, then candidate files):
@@ -104,6 +135,8 @@ BEFORE writing anything, read the existing memory dir (`MEMORY.md` first, then c
 End with a short bullet list — memories **created / updated / confirmed**, proposals written (§6) — each with its one-line description, in the user's language. If proposals are pending, add: "N proposals pending — run `/dream proposals` to review."
 
 ## 6. Self-improvement pass (runs at the end of every capture mode)
+
+> **PORTABLE:** there is no `~/.claude/dream/proposals/` to write to, and installed skills are a read-only plugin cache. Do not write proposal files — surface any gap as a text suggestion in the final report, noting it must be applied from Claude Code (or by rebuilding the plugin zip). Skip the rest of this section.
 
 If the session revealed a gap, error, or missing step in one of the user's skills (`~/.claude/skills/*/SKILL.md`) or in the project's CLAUDE.md — e.g. a workaround applied that the runbook doesn't document, a skill that was loaded and turned out wrong or missing a step — write a **proposal file**. NEVER edit the target directly in this pass.
 
