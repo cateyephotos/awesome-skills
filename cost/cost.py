@@ -19,6 +19,7 @@ exits cleanly with a friendly message instead of an error.
 
 import argparse
 import json
+import re
 import sys
 from decimal import Decimal, getcontext
 from pathlib import Path
@@ -27,16 +28,34 @@ getcontext().prec = 28
 
 # --- Pricing -----------------------------------------------------------------
 # USD per 1,000,000 tokens: (base input, output). Source: claude-api skill
-# (cached 2026-06-04). Easy to extend — just add a model row.
+# (cached 2026-06-24). Easy to extend — just add a model row. Verify a rate in
+# the claude-api skill before adding it; don't guess.
 PRICES = {
+    "claude-opus-5":     (Decimal("5"),  Decimal("25")),
     "claude-opus-4-8":   (Decimal("5"),  Decimal("25")),
     "claude-opus-4-7":   (Decimal("5"),  Decimal("25")),
     "claude-opus-4-6":   (Decimal("5"),  Decimal("25")),
     "claude-opus-4-5":   (Decimal("5"),  Decimal("25")),
+    # List rate. An introductory $2/$10 runs through 2026-08-31; this skill
+    # prices at list, so no end-of-month maintenance is needed.
+    "claude-sonnet-5":   (Decimal("3"),  Decimal("15")),
     "claude-sonnet-4-6": (Decimal("3"),  Decimal("15")),
     "claude-haiku-4-5":  (Decimal("1"),  Decimal("5")),
     "claude-fable-5":    (Decimal("10"), Decimal("50")),
+    "claude-mythos-5":   (Decimal("10"), Decimal("50")),
+    # Fast mode (research preview) is a separate, higher rate. Only Opus 5 and
+    # Opus 4.8 support it — fast mode was removed on Opus 4.7.
+    "claude-opus-5 (fast)":   (Decimal("10"), Decimal("50")),
+    "claude-opus-4-8 (fast)": (Decimal("10"), Decimal("50")),
 }
+
+# Rows that aren't real API calls: counted nowhere, and kept out of warnings.
+SKIP_MODELS = {"<synthetic>"}
+
+FAST_SUFFIX = " (fast)"
+_PROVIDER_PREFIXES = ("us.anthropic.", "eu.anthropic.", "apac.anthropic.", "anthropic.")
+_DATED_SNAPSHOT_RE = re.compile(r"-\d{8}$")
+_MODEL_RE = re.compile(r"^claude-([a-z]+)-(\d+(?:-\d+)*)$")
 
 # Cache multipliers applied to the base input price (shared/prompt-caching.md).
 CACHE_READ_MULT = Decimal("0.1")    # cache read
@@ -97,6 +116,8 @@ def aggregate_file(path: Path, by_model: dict | None = None) -> dict:
         usage = msg.get("usage")
         if not usage:
             continue
+        if (msg.get("model") or "unknown") in SKIP_MODELS:
+            continue  # not a real API call — don't count it or flag it as unknown
         key = obj.get("requestId") or obj.get("uuid") or id(obj)
         total = _usage_total(usage)
         if key not in best:
@@ -107,7 +128,7 @@ def aggregate_file(path: Path, by_model: dict | None = None) -> dict:
 
     for key in order:
         model, usage, _ = best[key]
-        acc = by_model.setdefault(model, empty_acc())
+        acc = by_model.setdefault(price_key(model, usage.get("speed")), empty_acc())
         acc["calls"] += 1
         acc["input"] += int(usage.get("input_tokens") or 0)
         acc["cache_read"] += int(usage.get("cache_read_input_tokens") or 0)
@@ -162,10 +183,74 @@ def file_meta(path: Path) -> tuple[str, str | None]:
     return title, started
 
 
-def cost_for_model(model: str, acc: dict) -> Decimal | None:
-    price = PRICES.get(model)
-    if price is None:
+def price_key(model: str, speed: str | None) -> str:
+    """Canonical pricing key: strips provider prefixes, long-context markers and
+    dated snapshot suffixes, then appends the fast-mode variant if applicable."""
+    key = model
+    for prefix in _PROVIDER_PREFIXES:
+        if key.startswith(prefix):
+            key = key[len(prefix):]
+            break
+    if key.endswith("[1m]"):
+        key = key[:-len("[1m]")]
+    key = _DATED_SNAPSHOT_RE.sub("", key)
+    if speed == "fast":
+        key += FAST_SUFFIX
+    return key
+
+
+def _parse_version(key: str) -> tuple[str, tuple[int, ...]] | None:
+    m = _MODEL_RE.match(key)
+    if not m:
         return None
+    family, version = m.group(1), m.group(2)
+    return family, tuple(int(p) for p in version.split("-"))
+
+
+def _version_sort_key(version: tuple[int, ...], width: int) -> tuple[int, ...]:
+    return version + (0,) * (width - len(version))
+
+
+def resolve_price(key: str) -> tuple[tuple[Decimal, Decimal] | None, str | None]:
+    """Return (price, key_used). key_used != key means the price is a series
+    fallback estimate — the model is newer than PRICES."""
+    price = PRICES.get(key)
+    if price is not None:
+        return price, key
+
+    is_fast = key.endswith(FAST_SUFFIX)
+    base_key = key[:-len(FAST_SUFFIX)] if is_fast else key
+    parsed = _parse_version(base_key)
+    if parsed is None:
+        return None, None
+    family, _ = parsed
+
+    candidates = []
+    for known in PRICES:
+        known_fast = known.endswith(FAST_SUFFIX)
+        if known_fast != is_fast:
+            continue
+        known_base = known[:-len(FAST_SUFFIX)] if known_fast else known
+        known_parsed = _parse_version(known_base)
+        if known_parsed is None or known_parsed[0] != family:
+            continue
+        candidates.append((known_parsed[1], known))
+
+    if not candidates and is_fast:
+        # This family has no fast row (e.g. sonnet): fall back to its base rate.
+        return resolve_price(base_key)
+    if not candidates:
+        return None, None
+
+    width = max(len(v) for v, _ in candidates)
+    _, best = max(candidates, key=lambda c: _version_sort_key(c[0], width))
+    return PRICES[best], best
+
+
+def cost_for_model(model: str, acc: dict) -> tuple[Decimal | None, str | None]:
+    price, key_used = resolve_price(model)
+    if price is None:
+        return None, None
     base_in, out_rate = price
     base = base_in / MILLION
     return (
@@ -174,24 +259,27 @@ def cost_for_model(model: str, acc: dict) -> Decimal | None:
         + Decimal(acc["write_5m"]) * base * WRITE_5M_MULT
         + Decimal(acc["write_1h"]) * base * WRITE_1H_MULT
         + Decimal(acc["output"]) * (out_rate / MILLION)
-    )
+    ), key_used
 
 
-def summarize(by_model: dict) -> tuple[dict, Decimal, set]:
+def summarize(by_model: dict) -> tuple[dict, Decimal, set, dict]:
     tok = {k: 0 for k in TOKEN_KEYS}
     tok.update(calls=0, web_search=0, web_fetch=0)
     usd = Decimal(0)
     unknown = set()
+    estimated: dict = {}
     for model, acc in by_model.items():
         for k in tok:
             tok[k] += acc.get(k, 0)
-        c = cost_for_model(model, acc)
+        c, key_used = cost_for_model(model, acc)
         if c is None:
             unknown.add(model)
         else:
             usd += c
+            if key_used != model:
+                estimated[model] = key_used
     tok["total"] = sum(tok[k] for k in TOKEN_KEYS)
-    return tok, usd, unknown
+    return tok, usd, unknown, estimated
 
 
 def subagent_files(conv_path: Path) -> list[Path]:
@@ -250,10 +338,12 @@ def unavailable(reason: str, as_json: bool):
 def model_block_json(by_model: dict, rate: Decimal) -> list:
     out = []
     for model, acc in sorted(by_model.items()):
-        c = cost_for_model(model, acc)
+        c, key_used = cost_for_model(model, acc)
         out.append({
             "model": model,
             "priced": c is not None,
+            "priced_as": key_used,
+            "price_estimated": c is not None and key_used != model,
             "calls": acc["calls"],
             "tokens": {k: acc[k] for k in TOKEN_KEYS},
             "total_tokens": sum(acc[k] for k in TOKEN_KEYS),
@@ -271,7 +361,7 @@ def run_current(args, files, rate):
             before = sum(a["calls"] for a in by_model.values())
             aggregate_file(sf, by_model)
             sub_calls += sum(a["calls"] for a in by_model.values()) - before
-    tok, usd, unknown = summarize(by_model)
+    tok, usd, unknown, estimated = summarize(by_model)
     title, started = file_meta(conv)
 
     if args.json:
@@ -291,6 +381,7 @@ def run_current(args, files, rate):
                 **money_fields(usd, rate),
             },
             "unknown_models": sorted(unknown),
+            "estimated_models": estimated,
         }, indent=2))
         return 0
 
@@ -315,6 +406,11 @@ def run_current(args, files, rate):
         print()
         print(f"  ! Unknown model(s) priced at $0: {', '.join(sorted(unknown))}."
               " Add them to PRICES in cost.py.")
+    if estimated:
+        print()
+        for model, used in sorted(estimated.items()):
+            print(f"  ≈ Estimated price: {model} priced as {used}."
+                  " Verify the rate in the claude-api skill and add it to PRICES.")
     return 0
 
 
@@ -324,12 +420,13 @@ def run_history(args, files, rate):
     grand["total"] = 0
     grand_usd = Decimal(0)
     unknown_all = set()
+    estimated_all: dict = {}
     for conv in files:
         by_model = aggregate_file(conv)
         if args.include_subagents:
             for sf in subagent_files(conv):
                 aggregate_file(sf, by_model)
-        tok, usd, unknown = summarize(by_model)
+        tok, usd, unknown, estimated = summarize(by_model)
         if tok["total"] == 0:
             continue
         title, started = file_meta(conv)
@@ -340,6 +437,7 @@ def run_history(args, files, rate):
             grand[k] += tok[k]
         grand_usd += usd
         unknown_all |= unknown
+        estimated_all.update(estimated)
     rows.sort(key=lambda r: r["usd"], reverse=True)
 
     if args.json:
@@ -363,6 +461,7 @@ def run_history(args, files, rate):
                 **money_fields(grand_usd, rate),
             },
             "unknown_models": sorted(unknown_all),
+            "estimated_models": estimated_all,
         }, indent=2))
         return 0
 
@@ -385,6 +484,11 @@ def run_history(args, files, rate):
         print()
         print(f"! Unknown model(s) priced at $0: {', '.join(sorted(unknown_all))}."
               " Add them to PRICES in cost.py.")
+    if estimated_all:
+        print()
+        for model, used in sorted(estimated_all.items()):
+            print(f"≈ Estimated price: {model} priced as {used}."
+                  " Verify the rate in the claude-api skill and add it to PRICES.")
     return 0
 
 

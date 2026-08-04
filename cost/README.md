@@ -85,23 +85,37 @@ Tokens to replay this conversation on the API:
   TOTAL          : 4,010,824
 
 Estimated API cost (list price, cache-aware):
-  USD : $5.2149
-  EUR : €4.7977   (at 0.92 EUR per USD)
+  USD : $5.21
+  EUR : €4,80   (at 0.92 EUR per USD)
 ```
 
 ## Pricing
 
-Per million tokens — base input / output (source: Anthropic, cached 2026-06-04):
+Per million tokens — base input / output (source: the `claude-api` skill, cached
+2026-06-24):
 
 | Model | input $/M | output $/M |
 |---|---|---|
+| `claude-opus-5` | 5.00 | 25.00 |
 | `claude-opus-4-8` | 5.00 | 25.00 |
 | `claude-opus-4-7` | 5.00 | 25.00 |
 | `claude-opus-4-6` | 5.00 | 25.00 |
 | `claude-opus-4-5` | 5.00 | 25.00 |
+| `claude-sonnet-5` | 3.00 | 15.00 |
 | `claude-sonnet-4-6` | 3.00 | 15.00 |
 | `claude-haiku-4-5` | 1.00 | 5.00 |
 | `claude-fable-5` | 10.00 | 50.00 |
+| `claude-mythos-5` | 10.00 | 50.00 |
+| `claude-opus-5 (fast)` | 10.00 | 50.00 |
+| `claude-opus-4-8 (fast)` | 10.00 | 50.00 |
+
+Sonnet 5 is priced at its **list** rate. An introductory $2/$10 runs through
+2026-08-31; this skill reports list rates throughout, so the table needs no
+end-of-month maintenance.
+
+Fast mode is a separate, higher rate and only exists on Opus 5 and Opus 4.8 (it
+was removed on Opus 4.7). Calls made with `/fast` are aggregated and reported as
+their own `… (fast)` row.
 
 Cache multipliers on the base input price: **cache read 0.1×**, **5-minute write
 1.25×**, **1-hour write 2×**. Per call:
@@ -114,9 +128,35 @@ cost = input·base
      + output·out_rate
 ```
 
-To add or update a model, edit the `PRICES` dict at the top of `cost.py`.
-Unknown model IDs are counted as tokens but priced at $0 and flagged in the
-output, so totals stay honest.
+To add or update a model, edit the `PRICES` dict at the top of `cost.py` — look
+the rate up in the `claude-api` skill first rather than guessing.
+
+### Model-ID normalization
+
+The model ID recorded in a transcript rarely matches a `PRICES` key exactly, so
+each ID is normalized first: provider prefixes (`us.anthropic.`, `eu.anthropic.`,
+`apac.anthropic.`, `anthropic.`) and the `[1m]` long-context marker are stripped,
+a dated snapshot suffix is dropped (`claude-haiku-4-5-20251001` →
+`claude-haiku-4-5`), and fast-mode calls get a `" (fast)"` suffix. The result is
+both the price-table key and the aggregation key for the per-model rows.
+
+### Series fallback
+
+If a normalized key still isn't in `PRICES`, the model is priced at the most
+recent known rate in its own series and speed variant — so the day
+`claude-opus-5-1` ships it is priced as `claude-opus-5` instead of silently
+costing $0. Fallback-priced models are listed under `estimated_models` in the
+JSON (and `price_estimated` on the per-model row), and their cost **is** included
+in the total.
+
+**The fallback does not excuse leaving `PRICES` stale** — it is a safety net, not
+a substitute for adding the row. Legacy pre-4 IDs (`claude-3-5-sonnet`,
+`claude-3-haiku`) use a reversed naming scheme that the series matcher doesn't
+recognize, so they stay unknown at $0; those models are retired, and pricing them
+at current Sonnet rates would overstate the total badly.
+
+Genuinely unknown model IDs are counted as tokens but priced at $0 and flagged in
+the output, so totals stay honest.
 
 ## Behaviour outside Cowork / Claude Code
 

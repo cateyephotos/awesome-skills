@@ -75,3 +75,10 @@ not an error.
   so treat it as a comparison, not your actual invoice.
 - If the output lists `unknown_models`, mention those calls were counted as tokens but priced
   at $0 because their rate isn't in the table yet (add them to `PRICES` in `cost.py`).
+- If the output lists `estimated_models`, **say so explicitly** — those models are newer than
+  the price table, so they were priced with their series' most recent known rate (e.g.
+  "`claude-opus-5-1` was priced at the `claude-opus-5` rate because it's newer than the
+  table"). Their cost **is** included in the total, so without this caveat a fallback
+  estimate reads as a confirmed figure.
+- Current rates are verified in the **`claude-api`** skill. Before adding a row to `PRICES`,
+  look the rate up there rather than guessing.
