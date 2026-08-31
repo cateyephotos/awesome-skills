@@ -8,7 +8,9 @@ for the current conversation or for your whole history.
 ## What it does
 
 Cowork and Claude Code already run on the Claude API and write one JSONL
-transcript per conversation under `~/.claude/projects/`. Every assistant turn
+transcript per conversation under a local `.claude/projects/` folder (see
+[Where transcripts are read from](#where-transcripts-are-read-from) — the
+location differs between Claude Code and Cowork). Every assistant turn
 records the **actual** API call it made, including the prompt-cache breakdown.
 This skill reads those transcripts, sums the real token usage, and prices it at
 Anthropic list rates — so the result is a faithful replay cost, not a guess.
@@ -69,6 +71,37 @@ python cost.py --mode current --json
 | `--include-subagents` | off | Also count subagent API calls (more complete cost). |
 | `--json` | off | Emit structured JSON instead of the human table. |
 
+### Where transcripts are read from
+
+The script tries these in order and uses the first that exists:
+
+| # | Path | Surface |
+|---|---|---|
+| 1 | `$CLAUDE_PROJECTS_DIR` | Explicit override (unset by default). **Skipped without warning if it doesn't exist** — check your spelling. |
+| 2 | `~/.claude/projects` | Claude Code, on a real machine. |
+| 3 | `~/mnt/.claude/projects` | Cowork. |
+
+Cowork runs the script inside an isolated Linux sandbox whose home is **not**
+your home — it has its own user and its own filesystem — and bind-mounts the
+host's `.claude` under `$HOME/mnt/`. Looking only at `~/.claude/projects` there
+finds nothing, which is why candidate 3 exists.
+
+`CLAUDE_PROJECTS_DIR` is tried **first**, not unconditionally: like every other
+candidate it is skipped if it doesn't exist, so a typo silently falls through to
+`~/.claude/projects` rather than failing. It makes the script testable without
+touching `HOME`, and covers the mount moving without a code change:
+
+```bash
+CLAUDE_PROJECTS_DIR=/some/where/.claude/projects python cost.py --mode current
+```
+
+If no candidate exists, the script exits cleanly with the friendly message; in
+`--json` the payload lists the paths it tried under `searched`.
+
+In Cowork the mount exposes only the **active session's** project folder, so
+`--mode history` there sees a single conversation. Claude Code sees the whole
+archive.
+
 ### Example (human output)
 
 ```
@@ -101,7 +134,7 @@ Per million tokens — base input / output (source: the `claude-api` skill, cach
 | `claude-opus-4-7` | 5.00 | 25.00 |
 | `claude-opus-4-6` | 5.00 | 25.00 |
 | `claude-opus-4-5` | 5.00 | 25.00 |
-| `claude-sonnet-5` | 3.00 | 15.00 |
+| `claude-sonnet-5` | 2.00 | 10.00 |
 | `claude-sonnet-4-6` | 3.00 | 15.00 |
 | `claude-haiku-4-5` | 1.00 | 5.00 |
 | `claude-fable-5` | 10.00 | 50.00 |
@@ -109,9 +142,9 @@ Per million tokens — base input / output (source: the `claude-api` skill, cach
 | `claude-opus-5 (fast)` | 10.00 | 50.00 |
 | `claude-opus-4-8 (fast)` | 10.00 | 50.00 |
 
-Sonnet 5 is priced at its **list** rate. An introductory $2/$10 runs through
-2026-08-31; this skill reports list rates throughout, so the table needs no
-end-of-month maintenance.
+Sonnet 5 is $2/$10. That started as introductory pricing through 2026-08-31,
+but it is now the standard rate — the increase to $3/$15 planned for 2026-09-01
+was cancelled ([Pricing](https://platform.claude.com/docs/en/about-claude/pricing)).
 
 Fast mode is a separate, higher rate and only exists on Opus 5 and Opus 4.8 (it
 was removed on Opus 4.7). Calls made with `/fast` are aggregated and reported as
@@ -175,8 +208,11 @@ explaining that transcripts only exist inside such a session.
 ## Requirements
 
 - Python 3 (uses only the standard library).
-- Installed at `~/.claude/skills/cost/`. Restart Cowork / Claude Code after
-  installing so the skill is picked up.
+- Distributed as part of the `awesome-skills` marketplace plugin, so it lives in
+  the plugin cache rather than at a fixed path. `SKILL.md` locates `cost.py`
+  through `${CLAUDE_SKILL_DIR}`; don't hardcode an absolute path. After updating
+  the plugin, run `/reload-plugins` or restart the client so the new version is
+  picked up.
 
 ## Notes & limitations
 

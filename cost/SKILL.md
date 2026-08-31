@@ -37,11 +37,16 @@ The worker is `cost.py`, located in this skill's folder. Run it with the system 
 2. **Run the script with `--json`** so you can render the result yourself:
 
    ```
-   python "C:\Users\massimo.olivieri\.claude\skills\cost\cost.py" --mode current --json
+   python "${CLAUDE_SKILL_DIR}/cost.py" --mode current --json
    ```
    ```
-   python "C:\Users\massimo.olivieri\.claude\skills\cost\cost.py" --mode history --json
+   python "${CLAUDE_SKILL_DIR}/cost.py" --mode history --json
    ```
+
+   Keep the quotes — the path can contain spaces. If the command above still shows a
+   literal `${CLAUDE_SKILL_DIR}`, your surface doesn't substitute it: `cost.py` sits in the
+   same folder as this `SKILL.md`, so locate it with Glob (`**/cost/cost.py`) and run
+   the path you find.
 
    Options:
    - `--rate-eur 0.92` — EUR per 1 USD (approximate, editable). Pass a current rate if the
@@ -80,5 +85,8 @@ not an error.
   "`claude-opus-5-1` was priced at the `claude-opus-5` rate because it's newer than the
   table"). Their cost **is** included in the total, so without this caveat a fallback
   estimate reads as a confirmed figure.
+- In **Cowork**, `--mode history` sees only the **current** conversation — the sandbox
+  exposes just the active session's project folder, not the whole archive. Say so instead
+  of presenting one conversation as the user's full history. Claude Code sees everything.
 - Current rates are verified in the **`claude-api`** skill. Before adding a row to `PRICES`,
   look the rate up there rather than guessing.

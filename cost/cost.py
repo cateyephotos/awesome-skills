@@ -19,6 +19,7 @@ exits cleanly with a friendly message instead of an error.
 
 import argparse
 import json
+import os
 import re
 import sys
 from decimal import Decimal, getcontext
@@ -36,9 +37,7 @@ PRICES = {
     "claude-opus-4-7":   (Decimal("5"),  Decimal("25")),
     "claude-opus-4-6":   (Decimal("5"),  Decimal("25")),
     "claude-opus-4-5":   (Decimal("5"),  Decimal("25")),
-    # List rate. An introductory $2/$10 runs through 2026-08-31; this skill
-    # prices at list, so no end-of-month maintenance is needed.
-    "claude-sonnet-5":   (Decimal("3"),  Decimal("15")),
+    "claude-sonnet-5":   (Decimal("2"),  Decimal("10")),
     "claude-sonnet-4-6": (Decimal("3"),  Decimal("15")),
     "claude-haiku-4-5":  (Decimal("1"),  Decimal("5")),
     "claude-fable-5":    (Decimal("10"), Decimal("50")),
@@ -66,8 +65,34 @@ MILLION = Decimal("1000000")
 TOKEN_KEYS = ("input", "cache_read", "write_5m", "write_1h", "output")
 
 
+def projects_dir_candidates() -> list[Path]:
+    """Where transcripts can live, in priority order.
+
+    Claude Code keeps them under the real home. In Cowork the skill runs inside
+    an isolated Linux sandbox whose home is NOT the user's home: the host's
+    .claude is bind-mounted at $HOME/mnt/.claude. An explicit override wins over
+    both, which also makes this testable without touching HOME.
+    """
+    override = os.environ.get("CLAUDE_PROJECTS_DIR")
+    candidates = [Path(override)] if override else []
+    candidates += [
+        Path.home() / ".claude" / "projects",          # Claude Code
+        Path.home() / "mnt" / ".claude" / "projects",  # Cowork sandbox mount
+    ]
+    return candidates
+
+
 def projects_dir() -> Path:
-    return Path.home() / ".claude" / "projects"
+    """First candidate that exists, else the last one.
+
+    Returning a path rather than raising keeps the is_dir() check in
+    find_conversations() — and the friendly unavailable() message — intact.
+    """
+    candidates = projects_dir_candidates()
+    for c in candidates:
+        if c.is_dir():
+            return c
+    return candidates[-1]
 
 
 def iter_json_lines(path: Path):
@@ -319,15 +344,22 @@ def money_fields(d: Decimal, rate: Decimal) -> dict:
 UNAVAILABLE_MESSAGE = (
     "This skill reads Claude Cowork / Claude Code conversation transcripts, which "
     "are stored locally only when you work inside Cowork or Claude Code. I couldn't "
-    "find any transcripts on this machine (~/.claude/projects), so there's nothing "
-    "to measure here.\n\nIf you're running this outside of Cowork or Claude Code, "
+    "find any transcripts on this machine, so there's nothing to measure here."
+    "\n\nIf you're running this outside of Cowork or Claude Code, "
     "that's expected — please open the skill from within a Cowork or Claude Code "
     "session and try again."
 )
 
 
 def unavailable(reason: str, as_json: bool):
-    payload = {"status": "unavailable", "reason": reason, "message": UNAVAILABLE_MESSAGE}
+    # The paths go in the JSON only: the prose is relayed to the user verbatim,
+    # and a sandbox home like /sessions/<random-name>/ is noise to them.
+    payload = {
+        "status": "unavailable",
+        "reason": reason,
+        "searched": [str(c) for c in projects_dir_candidates()],
+        "message": UNAVAILABLE_MESSAGE,
+    }
     if as_json:
         print(json.dumps(payload, indent=2))
     else:
